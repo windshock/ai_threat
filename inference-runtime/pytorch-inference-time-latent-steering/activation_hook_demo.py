@@ -65,6 +65,54 @@ def _pick_dtype(device: str) -> torch.dtype:
 DEVICE = _pick_device()
 DTYPE = _pick_dtype(DEVICE)
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _auto_use_chat_template(model_name: str, tok: Any) -> bool:
+    """
+    Many instruct/chat-tuned HF models expect the tokenizer chat template for proper behavior
+    (including safety/guardrails). This heuristic keeps default behavior for plain causal LMs
+    (e.g., gpt2) while enabling chat templates for common instruct model naming.
+    """
+    if not hasattr(tok, "apply_chat_template"):
+        return False
+    mn = (model_name or "").lower()
+    return any(k in mn for k in ("instruct", "-it", "chat"))
+
+
+def build_model_inputs(
+    tok: Any,
+    user_text: str,
+    *,
+    device: torch.device,
+    use_chat_template: bool,
+    system_prompt: str = "",
+) -> dict:
+    """
+    Build model inputs in a way that is compatible with both plain CausalLMs and chat-tuned models.
+    If use_chat_template=True and the tokenizer supports it, we use apply_chat_template().
+    """
+    if use_chat_template and hasattr(tok, "apply_chat_template"):
+        messages = []
+        sp = (system_prompt or "").strip()
+        if sp:
+            messages.append({"role": "system", "content": sp})
+        messages.append({"role": "user", "content": user_text})
+        try:
+            input_ids = tok.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
+        except Exception:
+            # Fallback: user-only if the template doesn't accept system role.
+            messages = [{"role": "user", "content": user_text}]
+            input_ids = tok.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
+        attention_mask = torch.ones_like(input_ids, dtype=torch.long)
+        return {"input_ids": input_ids.to(device), "attention_mask": attention_mask.to(device)}
+
+    return tok(user_text, return_tensors="pt").to(device)
+
 
 # ---------------------------
 # 유틸: 모델에서 "블록 레이어 목록" 찾기
@@ -122,6 +170,9 @@ def get_last_token_hidden_via_hidden_states(
     tok: Any,
     text: str,
     layer_idx: int,
+    *,
+    use_chat_template: bool = False,
+    system_prompt: str = "",
 ) -> torch.Tensor:
     """
     output_hidden_states=True로 hidden state를 얻고,
@@ -136,7 +187,13 @@ def get_last_token_hidden_via_hidden_states(
       shape: (hidden_size,)
       dtype: float32 (안정성을 위해 fp32로 변환)
     """
-    inputs = tok(text, return_tensors="pt").to(model.device)
+    inputs = build_model_inputs(
+        tok,
+        text,
+        device=model.device,
+        use_chat_template=use_chat_template,
+        system_prompt=system_prompt,
+    )
     out = model(**inputs, output_hidden_states=True, use_cache=False)
 
     hs_tuple = out.hidden_states
@@ -159,6 +216,9 @@ def build_style_steering_vector(
     layer_idx: int,
     neutral_prompt: str,
     target_prompt: str,
+    *,
+    use_chat_template: bool = False,
+    system_prompt: str = "",
 ) -> torch.Tensor:
     """
     간단한 representation engineering:
@@ -168,8 +228,22 @@ def build_style_steering_vector(
     - 무해한 스타일/톤 차이를 주는 프롬프트 쌍을 사용하세요.
     - 벡터는 normalize 해서 사용합니다.
     """
-    v_neu = get_last_token_hidden_via_hidden_states(model, tok, neutral_prompt, layer_idx)
-    v_tgt = get_last_token_hidden_via_hidden_states(model, tok, target_prompt, layer_idx)
+    v_neu = get_last_token_hidden_via_hidden_states(
+        model,
+        tok,
+        neutral_prompt,
+        layer_idx,
+        use_chat_template=use_chat_template,
+        system_prompt=system_prompt,
+    )
+    v_tgt = get_last_token_hidden_via_hidden_states(
+        model,
+        tok,
+        target_prompt,
+        layer_idx,
+        use_chat_template=use_chat_template,
+        system_prompt=system_prompt,
+    )
     v = v_tgt - v_neu
     v = v / (v.norm() + 1e-8)
     return v
@@ -333,11 +407,20 @@ def generate_text(
     temperature: float = 0.9,
     top_p: float = 0.95,
     do_sample: Optional[bool] = None,
+    *,
+    use_chat_template: bool = False,
+    system_prompt: str = "",
 ) -> str:
     """
     sampling 기반 텍스트 생성. (스타일 차이 관찰 용이)
     """
-    inputs = tok(prompt, return_tensors="pt").to(model.device)
+    inputs = build_model_inputs(
+        tok,
+        prompt,
+        device=model.device,
+        use_chat_template=use_chat_template,
+        system_prompt=system_prompt,
+    )
     if do_sample is None:
         # temperature==0이면 sampling 대신 greedy로
         do_sample = bool(temperature and temperature > 0)
@@ -426,12 +509,21 @@ def build_memory_from_prompt(
     layer_idx: int,
     prompt: str,
     mem_tokens: int = 32,
+    *,
+    use_chat_template: bool = False,
+    system_prompt: str = "",
 ) -> torch.Tensor:
     """
     cross_read 모드용 '메모리' 텐서 생성.
     - 지정 레이어의 hidden_states에서 마지막 mem_tokens 토큰을 잘라 (M,H) 반환
     """
-    inputs = tok(prompt, return_tensors="pt").to(model.device)
+    inputs = build_model_inputs(
+        tok,
+        prompt,
+        device=model.device,
+        use_chat_template=use_chat_template,
+        system_prompt=system_prompt,
+    )
     out = model(**inputs, output_hidden_states=True, use_cache=False)
     hs_tuple = out.hidden_states
     if hs_tuple is None:
@@ -450,6 +542,9 @@ def main():
 
     model, tok = load_model_and_tokenizer(model_name)
 
+    system_prompt = os.environ.get("SYSTEM_PROMPT", "")
+    use_chat_template = _env_bool("USE_CHAT_TEMPLATE", default=_auto_use_chat_template(model_name, tok))
+
     # transformer blocks 얻기 (GPT2: transformer.h / Llama&Gemma: model.layers 등 자동 탐색)
     blocks = get_transformer_blocks(model)
 
@@ -464,10 +559,26 @@ def main():
     neutral = "Write one short sentence: Thank you for your help."
     cheerful = "Write one short sentence in a cheerful, upbeat tone: Thank you for your help!"
 
-    v = build_style_steering_vector(model, tok, layer_idx, neutral, cheerful)
+    v = build_style_steering_vector(
+        model,
+        tok,
+        layer_idx,
+        neutral,
+        cheerful,
+        use_chat_template=use_chat_template,
+        system_prompt=system_prompt,
+    )
     mem_tokens = int(os.environ.get("MEM_TOKENS", "32"))
     # cross_read 메모리는 'cheerful' 프롬프트에서 추출 (무해한 스타일 메모리)
-    mem = build_memory_from_prompt(model, tok, layer_idx, cheerful, mem_tokens=mem_tokens)
+    mem = build_memory_from_prompt(
+        model,
+        tok,
+        layer_idx,
+        cheerful,
+        mem_tokens=mem_tokens,
+        use_chat_template=use_chat_template,
+        system_prompt=system_prompt,
+    )
 
     prompt = os.environ.get("PROMPT", "Describe a cup of coffee in 3 short sentences.")
     max_new_tokens = int(os.environ.get("MAX_NEW_TOKENS", "60"))
@@ -518,6 +629,7 @@ def main():
     print(f"[device] {DEVICE}  dtype={DTYPE}")
     print(f"[layer_idx] {layer_idx} / total_blocks={len(blocks)}")
     print(f"[mode] {mode}  apply_to={apply_to}  alpha={alpha}")
+    print(f"[chat_template] {use_chat_template}")
 
     print_output = os.environ.get("PRINT_OUTPUT", "1").lower() in ("1", "true", "yes", "y")
 
@@ -536,6 +648,8 @@ def main():
                 temperature=temperature,
                 top_p=top_p,
                 do_sample=do_sample,
+                use_chat_template=use_chat_template,
+                system_prompt=system_prompt,
             )
             if print_output:
                 print(base)
@@ -552,6 +666,8 @@ def main():
                     temperature=temperature,
                     top_p=top_p,
                     do_sample=do_sample,
+                    use_chat_template=use_chat_template,
+                    system_prompt=system_prompt,
                 )
                 if print_output:
                     print(out)

@@ -91,6 +91,24 @@ source .venv/bin/activate
 MODEL_NAME="google/gemma-2-2b-it" python activation_hook_demo.py
 ```
 
+## Instruct/Chat 모델 주의사항 (Gemma-IT 등)
+
+`google/gemma-2-2b-it` 같은 **Instruct(Chat-tuned) 모델은 보통 “채팅 템플릿(chat template)” 포맷으로 입력**을 줘야
+원래 의도된 응답 형식/거부 동작이 더 안정적으로 나옵니다.
+
+이 레포는 다음 옵션을 제공합니다:
+
+- **`USE_CHAT_TEMPLATE=1`**: tokenizer의 `apply_chat_template()`를 사용해 입력을 구성
+- **`SYSTEM_PROMPT="..."`**: (선택) system 역할 메시지를 추가
+
+예:
+
+```bash
+source .venv/bin/activate
+MODEL_NAME="google/gemma-2-2b-it" USE_CHAT_TEMPLATE=1 DTYPE=float16 \
+python activation_hook_demo.py
+```
+
 주의:
 
 - 일부 모델은 Hugging Face **토큰 로그인/권한/라이선스 동의**가 필요할 수 있습니다.
