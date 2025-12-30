@@ -479,16 +479,40 @@ def main():
     do_sample_env = os.environ.get("DO_SAMPLE")
     do_sample = None if do_sample_env is None else (do_sample_env.lower() in ("1", "true", "yes", "y"))
 
+    def _run_mode_from_env(var: str, default: str = "both") -> str:
+        """
+        Per-prompt run mode selector.
+          - baseline: run only baseline (no hook)
+          - steered : run only steered (hook)
+          - both    : run both baseline and steered
+        """
+        v = os.environ.get(var, default).strip().lower()
+        if v in ("baseline", "base", "nohook", "no_hook", "no-hook"):
+            return "baseline"
+        if v in ("steered", "steer", "hook", "withhook", "with_hook", "with-hook"):
+            return "steered"
+        if v in ("both", "all", ""):
+            return "both"
+        raise ValueError(f"Unsupported {var}={v!r} (use baseline|steered|both)")
+
     prompts_mode = os.environ.get("PROMPT_SUITE", "").lower() in ("1", "true", "yes", "y")
     suite = [
-        (os.environ.get("PROMPT1_NAME", "prompt1"), os.environ.get("PROMPT1", prompt)),
-        (os.environ.get("PROMPT2_NAME", "prompt2"), os.environ.get("PROMPT2", "")),
+        (
+            os.environ.get("PROMPT1_NAME", "prompt1"),
+            os.environ.get("PROMPT1", prompt),
+            _run_mode_from_env("PROMPT1_RUN", default="both"),
+        ),
+        (
+            os.environ.get("PROMPT2_NAME", "prompt2"),
+            os.environ.get("PROMPT2", ""),
+            _run_mode_from_env("PROMPT2_RUN", default="both"),
+        ),
     ]
     if not prompts_mode:
-        suite = [("prompt", prompt)]
+        suite = [("prompt", prompt, _run_mode_from_env("RUN", default="both"))]
     else:
         # 비어있으면 1개만 돌림
-        suite = [(n, p) for (n, p) in suite if p.strip()]
+        suite = [(n, p, m) for (n, p, m) in suite if p.strip()]
 
     print(f"\n[model] {model_name}")
     print(f"[device] {DEVICE}  dtype={DTYPE}")
@@ -497,28 +521,14 @@ def main():
 
     print_output = os.environ.get("PRINT_OUTPUT", "1").lower() in ("1", "true", "yes", "y")
 
-    for name, p in suite:
+    for name, p, run_mode in suite:
         p_preview = (p[:90] + "...") if len(p) > 90 else p
         print(f"\n--- {name} ---")
         print(f"[prompt] {p_preview}")
 
-        print("\n=== Baseline ===")
-        base = generate_text(
-            model,
-            tok,
-            p,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            do_sample=do_sample,
-        )
-        if print_output:
-            print(base)
-        print(f"[baseline_refusal_guess] {looks_like_refusal(base)}")
-
-        print("\n=== Steered (benign) ===")
-        with ActivationSteerer(layer, v, alpha=alpha, apply_to=apply_to, mode=mode, memory=mem) as steerer:
-            out = generate_text(
+        if run_mode in ("both", "baseline"):
+            print("\n=== Baseline ===")
+            base = generate_text(
                 model,
                 tok,
                 p,
@@ -528,11 +538,27 @@ def main():
                 do_sample=do_sample,
             )
             if print_output:
-                print(out)
-            print(f"[steered_refusal_guess] {looks_like_refusal(out)}")
-            print("\n[debug stats]")
-            print(f"  last_token_norm      : {steerer.stats.last_token_norm:.4f}")
-            print(f"  cos(last_token, v)   : {steerer.stats.last_token_cos_with_v:.4f}")
+                print(base)
+            print(f"[baseline_refusal_guess] {looks_like_refusal(base)}")
+
+        if run_mode in ("both", "steered"):
+            print("\n=== Steered (benign) ===")
+            with ActivationSteerer(layer, v, alpha=alpha, apply_to=apply_to, mode=mode, memory=mem) as steerer:
+                out = generate_text(
+                    model,
+                    tok,
+                    p,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    do_sample=do_sample,
+                )
+                if print_output:
+                    print(out)
+                print(f"[steered_refusal_guess] {looks_like_refusal(out)}")
+                print("\n[debug stats]")
+                print(f"  last_token_norm      : {steerer.stats.last_token_norm:.4f}")
+                print(f"  cos(last_token, v)   : {steerer.stats.last_token_cos_with_v:.4f}")
 
 
 if __name__ == "__main__":
