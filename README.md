@@ -109,6 +109,29 @@ MODEL_NAME="google/gemma-2-2b-it" USE_CHAT_TEMPLATE=1 DTYPE=float16 \
 python activation_hook_demo.py
 ```
 
+## Gemma 3 12B (macOS/MPS) 메모리 이슈
+
+Gemma 3 **12B급 모델은 macOS의 MPS(유니파이드 메모리)에서** 그대로 올리면 OOM이 날 수 있습니다.
+이 경우 아래 중 하나를 사용하세요.
+
+- **CPU로 강제**: 느리지만 OOM은 피하기 쉽습니다.
+
+```bash
+source .venv/bin/activate
+MODEL_NAME="google/gemma-3-12b-it" USE_CHAT_TEMPLATE=1 DEVICE=cpu \
+python activation_hook_demo.py
+```
+
+- **오프로딩(device_map) 사용**: 일부 레이어를 CPU/디스크로 넘겨 메모리를 줄입니다.
+
+```bash
+source .venv/bin/activate
+MODEL_NAME="google/gemma-3-12b-it" USE_CHAT_TEMPLATE=1 DEVICE_MAP=auto OFFLOAD_FOLDER=.hf-offload \
+python activation_hook_demo.py
+```
+
+또한 처음엔 `MAX_NEW_TOKENS`를 40~80 정도로 낮춰 “완주”부터 확인하는 것을 권장합니다.
+
 주의:
 
 - 일부 모델은 Hugging Face **토큰 로그인/권한/라이선스 동의**가 필요할 수 있습니다.

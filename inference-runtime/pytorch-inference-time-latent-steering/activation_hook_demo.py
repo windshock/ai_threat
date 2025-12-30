@@ -491,13 +491,35 @@ def load_model_and_tokenizer(model_name: str):
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        dtype=DTYPE,  # transformers>=4.57 권장 인자명
-        # 큰 모델/멀티GPU면 아래를 고려:
-        # device_map="auto",
-    )
-    model.to(DEVICE)
+    # Large model handling:
+    # - On macOS/MPS, big models (e.g., 12B) may OOM when moved fully onto MPS.
+    # - Allow explicit overrides via env:
+    #     DEVICE=cpu|mps|cuda
+    #     DEVICE_MAP=auto|cpu|... (HF accelerate device_map)
+    #     OFFLOAD_FOLDER=/path (for CPU/disk offload when using DEVICE_MAP)
+    forced_device = os.environ.get("DEVICE")
+    device = (forced_device.strip().lower() if forced_device else DEVICE)
+    device_map = os.environ.get("DEVICE_MAP")
+    offload_folder = os.environ.get("OFFLOAD_FOLDER", ".hf-offload")
+
+    from_pretrained_kwargs = {
+        "dtype": DTYPE,  # transformers>=4.57 권장 인자명
+        "low_cpu_mem_usage": True,
+    }
+
+    if device_map:
+        # When device_map is used, HF will place modules on devices without calling model.to().
+        from_pretrained_kwargs.update(
+            {
+                "device_map": device_map,
+                "offload_folder": offload_folder,
+            }
+        )
+        model = AutoModelForCausalLM.from_pretrained(model_name, **from_pretrained_kwargs)
+    else:
+        model = AutoModelForCausalLM.from_pretrained(model_name, **from_pretrained_kwargs)
+        model.to(device)
+
     model.eval()
     return model, tok
 
