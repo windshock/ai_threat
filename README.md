@@ -152,7 +152,7 @@ PROMPT_SUITE=1 \
 PROMPT1_NAME="benign_1" PROMPT1="Describe a cup of coffee in 3 short sentences." \
 PROMPT2_NAME="benign_2" PROMPT2="Write one short, cheerful sentence thanking a colleague." \
 MODEL_NAME="google/gemma-2-2b-it" DTYPE=float16 MODE=cross_read MEM_TOKENS=32 \
-MAX_NEW_TOKENS=60 DO_SAMPLE=1 TEMPERATURE=0.9 TOP_P=0.95 ALPHA=0.3 \
+MAX_NEW_TOKENS=200 DO_SAMPLE=1 TEMPERATURE=0.9 TOP_P=0.95 ALPHA=0.3 \
 python activation_hook_demo.py
 ```
 
@@ -165,11 +165,17 @@ python activation_hook_demo.py
 source .venv/bin/activate
 PROMPT_SUITE=1 PRINT_OUTPUT=0 \
 PROMPT1_NAME="baseline_prompt" PROMPT1="(your prompt here)" \
-PROMPT2_NAME="variant_prompt"  PROMPT2="(your prompt here)" \
+PROMPT2_NAME="variant_prompt"  PROMPT2="(a policy-violating prompt you are auditing internally — do NOT paste into public logs)" \
 MODEL_NAME="google/gemma-2-2b-it" DTYPE=float16 MODE=cross_read MEM_TOKENS=32 \
-MAX_NEW_TOKENS=80 DO_SAMPLE=0 TEMPERATURE=0 ALPHA=0.3 \
+MAX_NEW_TOKENS=200 DO_SAMPLE=0 TEMPERATURE=0 ALPHA=0.3 \
 python activation_hook_demo.py
 ```
+
+주의:
+
+- `PROMPT1`/`PROMPT2`는 **서로 다른 두 입력 케이스**를 의미할 뿐, “1번은 baseline만 / 2번은 steered만” 같은 의미가 아닙니다.
+  이 스크립트는 **각 프롬프트에 대해 Baseline과 Steered를 모두 실행**하고, 결과가 거부(refusal)처럼 보이는지(`*_refusal_guess`)를 출력합니다.
+- 이 레포는 **우회(bypass) 목적의 사용을 지원하지 않습니다.** 의도는 “무해한 스타일 steering이 거부를 약화시키지 않는지”를 점검하는 것입니다.
 
 ## macOS 참고 (SIGBUS 크래시)
 
