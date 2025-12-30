@@ -1,0 +1,5 @@
+# Root convenience requirements
+# This keeps the root README command `pip install -r requirements.txt` working.
+-r inference-runtime/pytorch-inference-time-latent-steering/requirements.txt
+
+
